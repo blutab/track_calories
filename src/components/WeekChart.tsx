@@ -1,6 +1,6 @@
 import type { Day } from "@/lib/data";
 import { formatDate } from "@/lib/dates";
-import { r0, status } from "./ui";
+import { r0, status, type Kind } from "./ui";
 
 function niceStep(x: number) {
   const p = Math.pow(10, Math.floor(Math.log10(x)));
@@ -8,12 +8,13 @@ function niceStep(x: number) {
   return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * p;
 }
 
-/** Bars = eaten, dashed line = that day's target. */
-export function WeekChart({ days, metric, kind, today }: { days: Day[]; metric: "kcal" | "protein"; kind: "cap" | "min"; today: string }) {
+/** Bars = eaten, dashed line = that day's target, shaded strip = maintenance band (kind "band"). */
+export function WeekChart({ days, metric, kind, today }: { days: Day[]; metric: "kcal" | "protein"; kind: Kind; today: string }) {
   const W = 640, H = 240, padL = 64, padR = 8, padT = 12, padB = 40;
   const vals = days.map((d) => (d.entries.length ? d.totals[metric] : 0));
   const tgs = days.map((d) => d.targets[metric]);
-  const max = Math.max(1, ...vals, ...tgs.filter((v): v is number => v != null)) * 1.1;
+  const bands = days.map((d) => (kind === "band" ? d.kcalBand : null));
+  const max = Math.max(1, ...vals, ...tgs.filter((v): v is number => v != null), ...bands.map((b) => b?.high ?? 0)) * 1.1;
   const step = niceStep(max / 4);
   const top = Math.ceil(max / step) * step;
   const y = (v: number) => padT + (H - padT - padB) * (1 - v / top);
@@ -36,11 +37,13 @@ export function WeekChart({ days, metric, kind, today }: { days: Day[]; metric: 
         const w = bw * 0.64;
         const v = vals[i];
         const tv = tgs[i];
-        const st = d.entries.length ? status(v, tv, kind) : "";
+        const b = bands[i];
+        const st = d.entries.length && !(kind === "band" && d.inProgress) ? status(v, tv, kind, b) : "";
         const col = st === "over" ? "var(--over)" : st === "good" ? "var(--good)" : "var(--accent)";
         const isToday = d.date === today;
         return (
           <g key={d.date}>
+            {b && <rect x={x - 4} y={y(b.high)} width={w + 8} height={Math.max(0, y(b.low) - y(b.high))} fill="var(--good)" opacity={0.15} />}
             {d.entries.length > 0 && <rect x={x} y={y(v)} width={w} height={Math.max(0, y(0) - y(v))} rx={4} fill={col} />}
             {tv != null && <line x1={x - 4} x2={x + w + 4} y1={y(tv)} y2={y(tv)} stroke="var(--ink)" strokeWidth={2} strokeDasharray="4 3" />}
             <text

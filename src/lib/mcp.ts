@@ -28,6 +28,14 @@ const targetPatch = z.object({
   steps: z.number().int().min(0).nullable().optional(),
 });
 
+const bandsPatch = z.object({
+  kcalBandPct: z.number().gt(0).max(50).optional().describe("Calorie band half-width, % of the kcal target (8 = ±8%)"),
+  weightBaselineKg: z.number().positive().nullable().optional().describe("Maintenance weight in kg; null removes the weight band"),
+  weightBandKg: z.number().gt(0).max(10).optional().describe("Weight band half-width in kg (1 = baseline ±1 kg)"),
+});
+
+const BAND_WORD = { under: "below band", in: "in band", over: "above band" } as const;
+
 function ok(summary: string, payload: unknown) {
   return {
     content: [
@@ -54,6 +62,10 @@ function daySummary(d: data.Day): string {
     const left = Math.round(t.kcal - d.totals.kcal);
     parts.push(left >= 0 ? `${left} kcal left` : `${-left} kcal over`);
   }
+  if (d.kcalBand) {
+    const st = d.kcalStatus && !d.inProgress ? `, ${BAND_WORD[d.kcalStatus]}` : d.inProgress ? ", day in progress" : "";
+    parts.push(`band ${d.kcalBand.low}–${d.kcalBand.high}${st}`);
+  }
   parts.push(`protein ${d.totals.protein}${t.protein != null ? ` / ${t.protein}` : ""} g`);
   parts.push(`carbs ${d.totals.carbs} g, fat ${d.totals.fat} g, fibre ${d.totals.fibre} g`);
   if (d.steps != null) parts.push(`steps ${d.steps}${t.steps != null ? ` / ${t.steps}` : ""}`);
@@ -67,8 +79,12 @@ function dayPayload(d: data.Day) {
     totals: d.totals,
     targets: d.targets,
     targetOverride: d.override,
+    kcalBand: d.kcalBand,
+    kcalStatus: d.kcalStatus,
+    inProgress: d.inProgress,
     steps: d.steps,
     weightKg: d.weightKg,
+    weightAvg7Kg: d.weightAvg7Kg,
     entries: d.entries.map((e) => ({
       id: e.id,
       meal: e.meal,
@@ -106,21 +122,40 @@ export function registerTools(server: McpServer) {
     {
       title: "Get weekly progress",
       description:
-        "Monday–Sunday summary for the week containing the date: per-day totals vs targets, averages over logged days, days on target, steps and weight change.",
+        "Monday–Sunday summary for the week containing the date: per-day totals vs targets, averages over finished logged days (today excluded), " +
+        "days inside/under/over the calorie maintenance band, steps, and the 7-day average weight against the weight band.",
       inputSchema: z.object({ date: dateArg }),
       annotations: { readOnlyHint: true },
     },
     async ({ date }) =>
       run(async () => {
         const w = await data.getWeek(resolveDate(date));
+        const inProgress = w.loggedDays - w.scoredDays;
         const summary =
-          `Week ${w.start} to ${w.end}: ${w.loggedDays} days logged, avg ${w.avg.kcal ?? "–"} kcal, ` +
-          `avg protein ${w.avg.protein ?? "–"} g, on calorie target ${w.daysOnCalorieTarget}/${w.loggedDays}, ` +
-          `protein hit ${w.daysHitProtein}/${w.loggedDays}, steps hit ${w.daysHitSteps}/${w.daysWithSteps}` +
-          (w.weightChangeKg != null ? `, weight change ${w.weightChangeKg} kg` : "");
+          `Week ${w.start} to ${w.end}: ${w.scoredDays} finished days logged${inProgress ? " (+ today in progress)" : ""}, ` +
+          `avg ${w.avg.kcal ?? "–"} kcal, avg protein ${w.avg.protein ?? "–"} g, ` +
+          `calorie band (±${w.bands.kcalBandPct}%): ${w.daysOnCalorieTarget} in, ${w.daysUnderCalorieBand} under, ${w.daysOverCalorieBand} over, ` +
+          `protein hit ${w.daysHitProtein}/${w.scoredDays}, steps hit ${w.daysHitSteps}/${w.daysWithSteps}` +
+          (w.weightTrendKg != null ? `, 7-day avg weight ${w.weightTrendKg} kg` : "") +
+          (w.weightBand
+            ? ` (band ${w.weightBand.low}–${w.weightBand.high} kg${w.weightStatus ? `, ${BAND_WORD[w.weightStatus]}` : ""})`
+            : w.weightTrendKg != null
+              ? " (no weight baseline set)"
+              : "");
         return ok(summary, {
           ...w,
-          days: w.days.map((d) => ({ date: d.date, totals: d.totals, targets: d.targets, steps: d.steps, weightKg: d.weightKg, entryCount: d.entries.length })),
+          days: w.days.map((d) => ({
+            date: d.date,
+            totals: d.totals,
+            targets: d.targets,
+            kcalBand: d.kcalBand,
+            kcalStatus: d.inProgress ? null : d.kcalStatus,
+            inProgress: d.inProgress,
+            steps: d.steps,
+            weightKg: d.weightKg,
+            weightAvg7Kg: d.weightAvg7Kg,
+            entryCount: d.entries.length,
+          })),
         });
       }),
   );
@@ -284,19 +319,23 @@ export function registerTools(server: McpServer) {
       title: "Change targets",
       description:
         "Without a date: update the default daily targets. With a date: set a one-day override for that date only. " +
-        "Omitted fields are unchanged; null clears a target. Pass clear_override=true with a date to go back to defaults.",
+        "Omitted fields are unchanged; null clears a target. Pass clear_override=true with a date to go back to defaults. " +
+        "`bands` (no date only) sets the maintenance bands: calorie band ±% around the kcal target, and weight baseline ± kg judged on the 7-day average.",
       inputSchema: z.object({
         date: z.string().optional(),
         clear_override: z.boolean().default(false),
         targets: targetPatch.default({}),
+        bands: bandsPatch.optional(),
       }),
     },
-    async ({ date, clear_override, targets }) =>
+    async ({ date, clear_override, targets, bands }) =>
       run(async () => {
         if (!date) {
-          const t = await data.setDefaultTargets(targets);
-          return ok(`Default targets: ${JSON.stringify(t)}`, t);
+          const t = Object.keys(targets).length ? await data.setDefaultTargets(targets) : await data.getDefaultTargets();
+          const b = bands ? await data.setBands(bands) : await data.getBands();
+          return ok(`Default targets: ${JSON.stringify(t)}. Bands: ${JSON.stringify(b)}`, { targets: t, bands: b });
         }
+        if (bands) return fail("Bands apply to every day; call set_targets without a date to change them.");
         const d0 = resolveDate(date);
         const o = await data.setDayTargets(d0, clear_override ? null : targets);
         return ok(o ? `Override for ${d0}: ${JSON.stringify(o)}` : `${d0} uses default targets.`, { date: d0, override: o });

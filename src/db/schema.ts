@@ -36,6 +36,12 @@ export const targets = pgTable(
   {
     id: integer("id").primaryKey().default(1),
     ...targetCols,
+    /** Calorie band half-width, % of the kcal target (8 = ±8%). */
+    kcalBandPct: doublePrecision("kcal_band_pct").notNull().default(8),
+    /** Maintenance weight; NULL = no weight band. */
+    weightBaselineKg: doublePrecision("weight_baseline_kg"),
+    /** Weight band half-width in kg. */
+    weightBandKg: doublePrecision("weight_band_kg").notNull().default(1),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [check("targets_single_row", sql`${t.id} = 1`)],
