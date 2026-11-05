@@ -18,7 +18,7 @@ export default async function TodayPage({ searchParams }: { searchParams: Promis
   const [d, recipes] = await Promise.all([getDay(date), listRecipes()]);
   const t = d.targets;
   const kcalLeft = t.kcal != null ? t.kcal - d.totals.kcal : null;
-  const kst = status(d.totals.kcal, t.kcal, "cap");
+  const kst = status(d.totals.kcal, t.kcal, "band", d.kcalBand);
   const h = currentHour();
   const defaultMeal = h < 11 ? "breakfast" : h < 15 ? "lunch" : h < 21 ? "dinner" : "snack";
 
@@ -61,10 +61,15 @@ export default async function TodayPage({ searchParams }: { searchParams: Promis
           ) : kcalLeft >= 0 ? (
             <span className={`pill ${kst}`}>{r0(kcalLeft)} kcal left</span>
           ) : (
-            <span className="pill over">{r0(-kcalLeft)} kcal over</span>
+            <span className={`pill ${kst}`}>{r0(-kcalLeft)} kcal over</span>
           )}
         </div>
-        <Bar value={d.totals.kcal} target={t.kcal} kind="cap" />
+        <Bar value={d.totals.kcal} target={t.kcal} kind="band" band={d.kcalBand} />
+        {d.kcalBand && (
+          <p className="hint" style={{ margin: 0 }}>
+            Maintenance band {fmtInt(d.kcalBand.low)}–{fmtInt(d.kcalBand.high)} kcal
+          </p>
+        )}
         <div className="metrics">
           {macroRows.map(({ k, label, kind }) => (
             <div className="metric" key={k}>

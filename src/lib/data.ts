@@ -1,7 +1,8 @@
 import { and, asc, eq, gte, lte, inArray } from "drizzle-orm";
 import { getDb, schema } from "@/db";
 import type { Meal } from "@/db/schema";
-import { addDays, mondayOf } from "./dates";
+import { addDays, mondayOf, todayIso } from "./dates";
+import { bandStatus, DEFAULT_BANDS, kcalBand, weightBand, type Bands, type BandStatus, type Range } from "./bands";
 
 const { targets, dayTargets, dayStats, recipes, recipeItems, foodEntries } = schema;
 
@@ -49,6 +50,14 @@ export type Day = {
   override: TargetPatch | null;
   steps: number | null;
   weightKg: number | null;
+  /** Today in the app time zone: still being logged, so left out of weekly scores. */
+  inProgress: boolean;
+  /** Calorie maintenance band for this day's kcal target. */
+  kcalBand: Range | null;
+  /** Where intake sits against the band. `null` when nothing is logged or there is no kcal target. */
+  kcalStatus: BandStatus | null;
+  /** Average of weigh-ins in the 7 days ending on this date. */
+  weightAvg7Kg: number | null;
 };
 
 const MACRO_KEYS = ["kcal", "protein", "carbs", "fat", "fibre"] as const;
@@ -96,6 +105,33 @@ export async function getDefaultTargets(): Promise<Targets> {
 export async function setDefaultTargets(patch: TargetPatch): Promise<Targets> {
   const next = { ...(await getDefaultTargets()) };
   for (const k of TARGET_KEYS) if (k in patch) next[k] = patch[k] ?? null;
+  await getDb()
+    .insert(targets)
+    .values({ id: 1, ...next })
+    .onConflictDoUpdate({ target: targets.id, set: { ...next, updatedAt: new Date() } });
+  return next;
+}
+
+// ---------- maintenance bands ----------
+
+export async function getBands(): Promise<Bands> {
+  const [row] = await getDb().select().from(targets).where(eq(targets.id, 1));
+  if (!row) return { ...DEFAULT_BANDS };
+  return { kcalBandPct: row.kcalBandPct, weightBaselineKg: row.weightBaselineKg, weightBandKg: row.weightBandKg };
+}
+
+/** Merge a patch into the bands. `weightBaselineKg: null` removes the weight band. */
+export async function setBands(patch: Partial<Bands>): Promise<Bands> {
+  const next = { ...(await getBands()) };
+  if (patch.kcalBandPct != null) {
+    if (!(patch.kcalBandPct > 0 && patch.kcalBandPct <= 50)) throw new Error("kcalBandPct must be between 0 and 50.");
+    next.kcalBandPct = patch.kcalBandPct;
+  }
+  if (patch.weightBandKg != null) {
+    if (!(patch.weightBandKg > 0 && patch.weightBandKg <= 10)) throw new Error("weightBandKg must be between 0 and 10.");
+    next.weightBandKg = r1(patch.weightBandKg);
+  }
+  if ("weightBaselineKg" in patch) next.weightBaselineKg = patch.weightBaselineKg == null ? null : r1(patch.weightBaselineKg);
   await getDb()
     .insert(targets)
     .values({ id: 1, ...next })
@@ -156,16 +192,20 @@ function toEntry(r: typeof foodEntries.$inferSelect): Entry {
 /** Load a range of days (inclusive). Days with no data are still returned. */
 export async function getDays(from: string, to: string): Promise<Day[]> {
   const db = getDb();
-  const [defaults, entryRows, statRows, overrideRows] = await Promise.all([
+  // Weigh-ins from 6 days earlier feed the 7-day rolling average.
+  const statsFrom = addDays(from, -6);
+  const [defaults, bands, entryRows, statRows, overrideRows] = await Promise.all([
     getDefaultTargets(),
+    getBands(),
     db
       .select()
       .from(foodEntries)
       .where(and(gte(foodEntries.date, from), lte(foodEntries.date, to)))
       .orderBy(asc(foodEntries.date), asc(foodEntries.createdAt), asc(foodEntries.id)),
-    db.select().from(dayStats).where(and(gte(dayStats.date, from), lte(dayStats.date, to))),
+    db.select().from(dayStats).where(and(gte(dayStats.date, statsFrom), lte(dayStats.date, to))),
     db.select().from(dayTargets).where(and(gte(dayTargets.date, from), lte(dayTargets.date, to))),
   ]);
+  const today = todayIso();
 
   const days: Day[] = [];
   for (let d = from; d <= to; d = addDays(d, 1)) {
@@ -173,15 +213,24 @@ export async function getDays(from: string, to: string): Promise<Day[]> {
     const stat = statRows.find((s) => s.date === d);
     const ovRow = overrideRows.find((o) => o.date === d);
     const override = ovRow ? compactTargets(pickTargets(ovRow)) : null;
+    const t = applyOverride(defaults, override);
+    const totals = sumMacros(entries);
+    const band = kcalBand(t.kcal, bands.kcalBandPct);
+    const windowStart = addDays(d, -6);
+    const recent = statRows.filter((s) => s.weightKg != null && s.date >= windowStart && s.date <= d).map((s) => s.weightKg!);
     days.push({
       date: d,
       entries,
-      totals: sumMacros(entries),
+      totals,
       defaultTargets: defaults,
       override,
-      targets: applyOverride(defaults, override),
+      targets: t,
       steps: stat?.steps ?? null,
       weightKg: stat?.weightKg ?? null,
+      inProgress: d === today,
+      kcalBand: band,
+      kcalStatus: entries.length ? bandStatus(totals.kcal, band) : null,
+      weightAvg7Kg: recent.length ? r1(recent.reduce((a, b) => a + b, 0) / recent.length) : null,
     });
   }
   return days;
@@ -195,46 +244,65 @@ export type WeekSummary = {
   start: string;
   end: string;
   days: Day[];
+  /** Days with at least one entry, including today. */
   loggedDays: number;
+  /** Logged days that are finished (today excluded). Averages and band scores use these. */
+  scoredDays: number;
   avg: { kcal: number | null; protein: number | null; carbs: number | null; fat: number | null; fibre: number | null; steps: number | null };
+  bands: Bands;
+  /** Scored days with intake inside the calorie band. */
   daysOnCalorieTarget: number;
+  daysUnderCalorieBand: number;
+  daysOverCalorieBand: number;
   daysHitProtein: number;
   daysHitSteps: number;
   daysWithSteps: number;
   weightChangeKg: number | null;
   weighIns: number;
+  /** 7-day rolling average at the week's last weigh-in. */
+  weightTrendKg: number | null;
+  weightBand: Range | null;
+  weightStatus: BandStatus | null;
 };
-
-/** Within 5% over the calorie target still counts as "on target". */
-export const CALORIE_TOLERANCE = 1.05;
 
 export async function getWeek(anyDateInWeek: string): Promise<WeekSummary> {
   const start = mondayOf(anyDateInWeek);
   const end = addDays(start, 6);
-  const days = await getDays(start, end);
+  const [days, bands] = await Promise.all([getDays(start, end), getBands()]);
   const logged = days.filter((d) => d.entries.length > 0);
-  const withSteps = days.filter((d) => d.steps != null);
+  const scored = logged.filter((d) => !d.inProgress);
+  const withSteps = days.filter((d) => d.steps != null && !d.inProgress);
   const weights = days.filter((d) => d.weightKg != null);
   const avgOf = (vals: number[]) => (vals.length ? r1(vals.reduce((a, b) => a + b, 0) / vals.length) : null);
+  const lastWeighIn = weights[weights.length - 1];
+  const weightTrendKg = lastWeighIn?.weightAvg7Kg ?? null;
+  const wBand = weightBand(bands);
   return {
     start,
     end,
     days,
     loggedDays: logged.length,
+    scoredDays: scored.length,
     avg: {
-      kcal: avgOf(logged.map((d) => d.totals.kcal)),
-      protein: avgOf(logged.map((d) => d.totals.protein)),
-      carbs: avgOf(logged.map((d) => d.totals.carbs)),
-      fat: avgOf(logged.map((d) => d.totals.fat)),
-      fibre: avgOf(logged.map((d) => d.totals.fibre)),
+      kcal: avgOf(scored.map((d) => d.totals.kcal)),
+      protein: avgOf(scored.map((d) => d.totals.protein)),
+      carbs: avgOf(scored.map((d) => d.totals.carbs)),
+      fat: avgOf(scored.map((d) => d.totals.fat)),
+      fibre: avgOf(scored.map((d) => d.totals.fibre)),
       steps: avgOf(withSteps.map((d) => d.steps!)),
     },
-    daysOnCalorieTarget: logged.filter((d) => d.targets.kcal != null && d.totals.kcal <= d.targets.kcal * CALORIE_TOLERANCE).length,
-    daysHitProtein: logged.filter((d) => d.targets.protein != null && d.totals.protein >= d.targets.protein).length,
+    bands,
+    daysOnCalorieTarget: scored.filter((d) => d.kcalStatus === "in").length,
+    daysUnderCalorieBand: scored.filter((d) => d.kcalStatus === "under").length,
+    daysOverCalorieBand: scored.filter((d) => d.kcalStatus === "over").length,
+    daysHitProtein: scored.filter((d) => d.targets.protein != null && d.totals.protein >= d.targets.protein).length,
     daysHitSteps: withSteps.filter((d) => d.targets.steps != null && d.steps! >= d.targets.steps).length,
     daysWithSteps: withSteps.length,
-    weightChangeKg: weights.length >= 2 ? r1(weights[weights.length - 1].weightKg! - weights[0].weightKg!) : null,
+    weightChangeKg: weights.length >= 2 ? r1(lastWeighIn.weightKg! - weights[0].weightKg!) : null,
     weighIns: weights.length,
+    weightTrendKg,
+    weightBand: wBand,
+    weightStatus: bandStatus(weightTrendKg, wBand),
   };
 }
 

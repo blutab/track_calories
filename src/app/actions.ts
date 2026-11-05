@@ -86,6 +86,16 @@ export async function saveDefaultTargetsAction(f: FormData) {
   done();
 }
 
+export async function saveBandsAction(f: FormData) {
+  await guard();
+  await data.setBands({
+    kcalBandPct: optNum(f, "kcalBandPct") ?? undefined,
+    weightBaselineKg: optNum(f, "weightBaselineKg"),
+    weightBandKg: optNum(f, "weightBandKg") ?? undefined,
+  });
+  done();
+}
+
 export async function deleteRecipeAction(f: FormData) {
   await guard();
   await data.deleteRecipe(str(f, "slug"));
