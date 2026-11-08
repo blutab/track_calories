@@ -57,6 +57,7 @@ Vercel project → **Settings → Environment Variables** (Production and Previe
 | `AUTH_GOOGLE_SECRET` | from step 3 |
 | `ALLOWED_EMAIL` | `blutab@gmail.com` |
 | `MCP_SECRET` | output of `openssl rand -hex 32` (64 random characters). **Keep this private**: anyone with the full MCP URL can read and write your log |
+| `HEALTH_SYNC_TOKEN` | optional, for the Apple Health steps sync (step 8). Output of `openssl rand -hex 32`. Keep private |
 | `APP_TIME_ZONE` | optional, defaults to `Europe/Amsterdam` |
 
 No terminal? A password manager's generator works for both secrets: use letters and digits only, at least 40 characters.
@@ -76,6 +77,11 @@ Then, in any chat: "I had my usual egg breakfast". Connectors you add on the web
 
 ### 7. On your phone
 Open the site in Safari (iPhone) → Share → **Add to Home Screen**. On Android/Chrome: menu → **Add to Home screen**.
+
+### 8. Sync steps from Apple Health (optional)
+Health data can't be read from the web, so an iOS Shortcut on the iPhone sends today's steps to `POST /api/health-sync` with `Authorization: Bearer <HEALTH_SYNC_TOKEN>` and a JSON body `{"steps": 8421, "date": "YYYY-MM-DD"}` (`date` optional, defaults to today). Each call overwrites that day's steps, so it's fine to run it many times a day.
+
+Shortcut: **Find Health Samples** (Type: Steps, Start Date: is today, Group By: Day) → **Calculate Statistics** (Sum) → **Format Date** (Current Date, custom `yyyy-MM-dd`) → **Get Contents of URL** (POST, header `Authorization: Bearer …`, JSON body `steps` = Statistics, `date` = Formatted Date). Run it from a Personal Automation set to *Run Immediately*. iOS blocks Health reads while the phone is locked, so trigger it on opening an app you use daily rather than only at a fixed time.
 
 ## Local development
 
@@ -100,4 +106,5 @@ After changing `src/db/schema.ts`, run `npm run db:generate` to create a migrati
 
 - Pages and server actions require a Google session whose verified email matches `ALLOWED_EMAIL`.
 - The MCP endpoint is protected by the secret in its URL. It returns 404 for anything else, and refuses to run if `MCP_SECRET` is missing or shorter than 32 characters. If the URL ever leaks, change `MCP_SECRET` in Vercel, redeploy, and update the connector URL in claude.ai.
+- `/api/health-sync` needs the `HEALTH_SYNC_TOKEN` bearer token, returns 404 otherwise, refuses to run if the token is missing or shorter than 32 characters, and can only write steps.
 - Upgrade path: replace the URL secret with OAuth (mcp-handler's `withMcpAuth`) if this ever needs to support more than one person.
