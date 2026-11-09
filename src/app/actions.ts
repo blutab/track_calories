@@ -108,3 +108,10 @@ export async function deleteRecipeAction(f: FormData) {
   await data.deleteRecipe(str(f, "slug"));
   done();
 }
+
+export async function syncHevyAction() {
+  await guard();
+  const { syncHevy } = await import("@/lib/training");
+  await syncHevy();
+  done();
+}

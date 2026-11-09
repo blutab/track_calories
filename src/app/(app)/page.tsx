@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { MEALS } from "@/db/schema";
 import { getDay, listRecipes } from "@/lib/data";
+import { getWorkoutsOn } from "@/lib/training";
 import { addDays, currentHour, formatDate, isIsoDate, todayIso } from "@/lib/dates";
 import { Bar, fmtInt, r0, r1, status } from "@/components/ui";
 import {
@@ -16,7 +17,7 @@ export default async function TodayPage({ searchParams }: { searchParams: Promis
   const sp = await searchParams;
   const today = todayIso();
   const date = isIsoDate(sp.date) ? sp.date : today;
-  const [d, recipes] = await Promise.all([getDay(date), listRecipes()]);
+  const [d, recipes, workouts] = await Promise.all([getDay(date), listRecipes(), getWorkoutsOn(date).catch(() => [])]);
   const t = d.targets;
   const kcalLeft = t.kcal != null ? t.kcal - d.totals.kcal : null;
   const kst = status(d.totals.kcal, t.kcal, "band", d.kcalBand);
@@ -127,6 +128,14 @@ export default async function TodayPage({ searchParams }: { searchParams: Promis
             </div>
           </div>
         </div>
+        {workouts.length > 0 && (
+          <p className="small">
+            <Link href="/strength">
+              <strong>Workout:</strong>
+            </Link>{" "}
+            {workouts.map((w) => `${w.title} (${w.sets} sets)`).join(", ")}
+          </p>
+        )}
         {d.override && <span className="hint">Targets are adjusted for this day.</span>}
       </section>
 

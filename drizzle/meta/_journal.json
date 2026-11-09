@@ -22,6 +22,13 @@
       "when": 1794220186257,
       "tag": "0002_chinups",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794222883671,
+      "tag": "0003_hevy",
+      "breakpoints": true
     }
   ]
 }

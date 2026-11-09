@@ -107,3 +107,9 @@ details > form { margin-top: 10px; }
 .signin { min-height: 70vh; display: grid; place-items: center; }
 
 @media (prefers-reduced-motion: no-preference) { .bar > i { transition: width 0.3s ease; } }
+
+/* Strength: exercise rows with a sparkline */
+.lift { display: grid; grid-template-columns: 1fr 96px auto; gap: 10px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
+.lift .name { font-weight: 700; }
+.spark { width: 96px; height: 28px; display: block; }
+code { font-size: 0.85em; background: var(--bg); padding: 1px 5px; border-radius: 5px; }
