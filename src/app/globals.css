@@ -111,5 +111,8 @@ details > form { margin-top: 10px; }
 /* Strength: exercise rows with a sparkline */
 .lift { display: grid; grid-template-columns: 1fr 96px auto; gap: 10px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
 .lift .name { font-weight: 700; }
+.lift-group { margin-top: 14px; }
+.lift-group h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 2px; }
+details.lift-group summary { padding: 8px 0; }
 .spark { width: 96px; height: 28px; display: block; }
 code { font-size: 0.85em; background: var(--bg); padding: 1px 5px; border-radius: 5px; }

@@ -1,7 +1,5 @@
-import type { SessionBest } from "@/lib/training";
-
-/** Per-session best over the window. The PR session in the window gets a filled dot. */
-export function Sparkline({ series, label }: { series: SessionBest[]; label: string }) {
+/** A series of bests over the window (per session or per week). The highest point gets a filled dot. */
+export function Sparkline({ series, label }: { series: { value: number }[]; label: string }) {
   const W = 120, H = 32, pad = 4;
   if (series.length < 2) return <svg className="spark" viewBox={`0 0 ${W} ${H}`} aria-hidden="true" />;
   const vals = series.map((s) => s.value);
