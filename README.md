@@ -26,10 +26,12 @@ The pages and the MCP tools both use the same functions in `src/lib/data.ts`, so
 | `day_stats` | Steps and weight per day |
 | `recipes` + `recipe_items` | Saved regular meals, with per-ingredient macros for one serving |
 | `food_entries` | Everything logged; macros stored already multiplied by servings |
+| `hevy_workouts` + `hevy_sets` | Strength workouts copied from Hevy (read-only mirror; Hevy is the source of truth) |
+| `hevy_sync` | Hevy sync cursor and last result (one row) |
 
 ### Claude's tools (`src/lib/mcp.ts`)
 
-`get_day`, `get_week`, `list_recipes`, `log_food`, `update_entry`, `delete_entry`, `save_recipe`, `delete_recipe`, `set_day_stats`, `set_targets`.
+`get_day`, `get_week`, `list_recipes`, `log_food`, `update_entry`, `delete_entry`, `save_recipe`, `delete_recipe`, `set_day_stats`, `log_chinups`, `set_targets`, `get_strength`, `sync_hevy`.
 
 ## Deploy (one-time setup, about 20 minutes)
 
@@ -58,6 +60,8 @@ Vercel project → **Settings → Environment Variables** (Production and Previe
 | `ALLOWED_EMAIL` | `blutab@gmail.com` |
 | `MCP_SECRET` | output of `openssl rand -hex 32` (64 random characters). **Keep this private**: anyone with the full MCP URL can read and write your log |
 | `HEALTH_SYNC_TOKEN` | optional, for the Apple Health steps sync (step 8). Output of `openssl rand -hex 32`. Keep private |
+| `HEVY_API_KEY` | optional, for strength training from Hevy (step 9) |
+| `CRON_SECRET` | optional, needed for the daily Hevy sync (step 9). Output of `openssl rand -hex 32`. Keep private |
 | `APP_TIME_ZONE` | optional, defaults to `Europe/Amsterdam` |
 
 No terminal? A password manager's generator works for both secrets: use letters and digits only, at least 40 characters.
@@ -83,6 +87,14 @@ Health data can't be read from the web, so an iOS Shortcut on the iPhone sends t
 
 Shortcut: **Find Health Samples** (Type: Steps, Start Date: is today, Group By: Day) → **Calculate Statistics** (Sum) → **Format Date** (Current Date, custom `yyyy-MM-dd`) → **Get Contents of URL** (POST, header `Authorization: Bearer …`, JSON body `steps` = Statistics, `date` = Formatted Date). Run it from a Personal Automation set to *Run Immediately*. iOS blocks Health reads while the phone is locked, so trigger it on opening an app you use daily rather than only at a fixed time.
 
+### 9. Strength training from Hevy (optional)
+Needs Hevy Pro. In the Hevy web app: **Settings → Developer → generate an API key**. In Vercel add `HEVY_API_KEY` (that key) and `CRON_SECRET` (`openssl rand -hex 32`), then redeploy.
+
+- **Sync**: Vercel Cron calls `/api/hevy-sync` once a day (`vercel.json`). The Strength tab and Claude's `get_strength` also sync when the data is over 30 minutes old, and there's a **Sync now** button. The first sync imports the whole history; after that only new, edited and deleted workouts are fetched.
+- **Strength tab**: per lift, the best of the last 4 weeks vs the 4 weeks before, the all-time PR and a sparkline of per-session bests; lifts with a new PR; weekly workouts, working sets and volume; recent workouts. Today's view shows that day's workout.
+- **How progress is scored** (warm-up sets ignored): loaded lifts use estimated 1RM (Epley, best working set of 1–12 reps). Assisted moves (title contains "assist") use body weight minus assistance, taking the nearest weigh-in within 2 weeks; without one they fall back to max reps. Bodyweight moves use max reps, timed holds max seconds.
+- **In chat**: "how are my lifts going?", "how's my hip thrust progressing?", "sync Hevy, I just trained".
+
 ## Local development
 
 ```bash
@@ -106,5 +118,6 @@ After changing `src/db/schema.ts`, run `npm run db:generate` to create a migrati
 
 - Pages and server actions require a Google session whose verified email matches `ALLOWED_EMAIL`.
 - The MCP endpoint is protected by the secret in its URL. It returns 404 for anything else, and refuses to run if `MCP_SECRET` is missing or shorter than 32 characters. If the URL ever leaks, change `MCP_SECRET` in Vercel, redeploy, and update the connector URL in claude.ai.
+- `/api/hevy-sync` needs the `CRON_SECRET` bearer token (Vercel Cron sends it), returns 404 otherwise, and refuses to run if the secret is missing or shorter than 32 characters. The Hevy key is only used server-side and only to read.
 - `/api/health-sync` needs the `HEALTH_SYNC_TOKEN` bearer token, returns 404 otherwise, refuses to run if the token is missing or shorter than 32 characters, and can only write steps.
 - Upgrade path: replace the URL secret with OAuth (mcp-handler's `withMcpAuth`) if this ever needs to support more than one person.

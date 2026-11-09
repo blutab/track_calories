@@ -109,3 +109,64 @@ export const foodEntries = pgTable(
     check("food_entries_meal_check", sql`${t.meal} in ('breakfast','lunch','dinner','snack')`),
   ],
 );
+
+// ---------- Hevy (strength training), synced read-only from the Hevy API ----------
+
+/** One Hevy workout. `id` is Hevy's UUID; `date` is the start day in the app time zone. */
+export const hevyWorkouts = pgTable(
+  "hevy_workouts",
+  {
+    id: text("id").primaryKey(),
+    title: text("title").notNull(),
+    date: date("date").notNull(),
+    startTime: timestamp("start_time", { withTimezone: true }).notNull(),
+    endTime: timestamp("end_time", { withTimezone: true }),
+    /** Hevy's own last-updated time for the workout. */
+    hevyUpdatedAt: timestamp("hevy_updated_at", { withTimezone: true }),
+    /** Working sets only (warm-ups excluded). */
+    setCount: integer("set_count").notNull().default(0),
+    /** Sum of weight × reps over working sets, kg. */
+    volumeKg: doublePrecision("volume_kg").notNull().default(0),
+  },
+  (t) => [index("hevy_workouts_date_idx").on(t.date)],
+);
+
+/** Every logged set. Replaced as a whole whenever its workout changes in Hevy. */
+export const hevySets = pgTable(
+  "hevy_sets",
+  {
+    id: serial("id").primaryKey(),
+    workoutId: text("workout_id")
+      .notNull()
+      .references(() => hevyWorkouts.id, { onDelete: "cascade" }),
+    exerciseIndex: integer("exercise_index").notNull(),
+    setIndex: integer("set_index").notNull(),
+    /** Hevy exercise template id; falls back to the title when Hevy sends none. */
+    exerciseKey: text("exercise_key").notNull(),
+    exerciseTitle: text("exercise_title").notNull(),
+    /** normal | warmup | dropset | failure */
+    type: text("type").notNull().default("normal"),
+    weightKg: doublePrecision("weight_kg"),
+    reps: integer("reps"),
+    distanceM: doublePrecision("distance_m"),
+    durationS: integer("duration_s"),
+    rpe: doublePrecision("rpe"),
+    /** Estimated one-rep max (Epley), working sets of 1–12 reps with weight only. */
+    e1rmKg: doublePrecision("e1rm_kg"),
+  },
+  (t) => [index("hevy_sets_workout_idx").on(t.workoutId), index("hevy_sets_exercise_idx").on(t.exerciseKey)],
+);
+
+/** Sync bookkeeping. Single row with id = 1. */
+export const hevySync = pgTable(
+  "hevy_sync",
+  {
+    id: integer("id").primaryKey().default(1),
+    /** Ask Hevy for events since this time on the next run. */
+    cursor: timestamp("cursor", { withTimezone: true }),
+    lastRunAt: timestamp("last_run_at", { withTimezone: true }),
+    lastOkAt: timestamp("last_ok_at", { withTimezone: true }),
+    lastError: text("last_error"),
+  },
+  (t) => [check("hevy_sync_single_row", sql`${t.id} = 1`)],
+);

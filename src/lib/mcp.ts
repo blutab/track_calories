@@ -3,6 +3,7 @@ import type { createMcpHandler } from "mcp-handler";
 import { MEALS } from "@/db/schema";
 import { resolveDate, todayIso, TIME_ZONE } from "./dates";
 import * as data from "./data";
+import * as training from "./training";
 
 type McpServer = Parameters<Parameters<typeof createMcpHandler>[0]>[0];
 
@@ -114,8 +115,10 @@ export function registerTools(server: McpServer) {
     },
     async ({ date }) =>
       run(async () => {
-        const d = await data.getDay(resolveDate(date));
-        return ok(daySummary(d), dayPayload(d));
+        const d0 = resolveDate(date);
+        const [d, workouts] = await Promise.all([data.getDay(d0), training.getWorkoutsOn(d0).catch(() => [])]);
+        const w = workouts.length ? ` · workout: ${workouts.map((x) => `${x.title} (${x.sets} sets)`).join(", ")}` : "";
+        return ok(daySummary(d) + w, { ...dayPayload(d), workouts });
       }),
   );
 
@@ -344,6 +347,61 @@ export function registerTools(server: McpServer) {
   );
 
   server.registerTool(
+    "get_strength",
+    {
+      title: "Strength progression (Hevy)",
+      description:
+        "Strength training synced from Hevy. Per exercise: all-time PR, best in the last 4 weeks vs the 4 weeks before " +
+        "(estimated 1RM in kg via Epley for loaded lifts of 1–12 reps; assisted moves use body weight minus assistance when a weigh-in is within 2 weeks; " +
+        "max reps for bodyweight moves; max seconds for holds), " +
+        "per-session bests over the window, weekly workouts/sets/volume, and lifts whose last-4-weeks best beats everything before. Warm-ups are ignored. " +
+        "Pass `exercise` (e.g. 'squat', 'hip thrust') to focus on matching lifts. Syncs from Hevy first if data is over 30 minutes old.",
+      inputSchema: z.object({
+        weeks: z.number().int().min(4).max(104).default(12).describe("Window for the per-session series and weekly load"),
+        exercise: z.string().optional().describe("Case-insensitive substring of the exercise title"),
+      }),
+      annotations: { readOnlyHint: true },
+    },
+    async ({ weeks, exercise }) =>
+      run(async () => {
+        await training.syncIfStale(30);
+        const r = await training.getStrength({ weeks, exercise });
+        if (!r.configured && !r.totalWorkouts) return fail("Hevy isn't connected: set HEVY_API_KEY in Vercel and redeploy.");
+        const top = r.exercises.slice(0, exercise ? 20 : 8).map((e) => {
+          const cur = e.current != null ? `${e.current} ${e.unit}` : "not done in last 4 wks";
+          const ch = e.change != null ? ` (${e.change >= 0 ? "+" : ""}${e.change} ${e.unit} vs prior 4 wks)` : "";
+          return `${e.title}: ${cur}${ch}; PR ${e.pr.value} ${e.unit} on ${e.pr.date} (${e.pr.topSet})`;
+        });
+        const prs = r.newPrs.map((p) => `${p.date} ${p.title} ${p.value} ${p.unit} (was ${p.previous})`);
+        const summary =
+          `${r.totalWorkouts} Hevy workouts synced (last OK sync ${r.lastSyncOkAt?.toISOString() ?? "never"}` +
+          `${r.lastSyncError ? `; last error: ${r.lastSyncError}` : ""}). ` +
+          `Last ${weeks} weeks: ${r.weeks.reduce((a, w) => a + w.workouts, 0)} workouts.\n` +
+          (top.length ? top.join("\n") : "No matching exercises.") +
+          (prs.length ? `\nLifts with a new PR in the last 4 weeks:\n${prs.join("\n")}` : "\nNo new PRs in the last 4 weeks.");
+        return ok(summary, r);
+      }),
+  );
+
+  server.registerTool(
+    "sync_hevy",
+    {
+      title: "Sync workouts from Hevy now",
+      description: "Pull new, edited and deleted workouts from Hevy. Runs daily on its own; use when the user just finished a workout.",
+      inputSchema: z.object({ full: z.boolean().default(false).describe("Re-import the whole Hevy history") }),
+    },
+    async ({ full }) =>
+      run(async () => {
+        const res = await training.syncHevy({ full });
+        if (!res.ok && !res.skipped) return fail(`Hevy sync failed: ${res.error}`);
+        return ok(
+          res.skipped ? `Sync skipped: ${res.skipped}.` : `Synced from Hevy: ${res.updated} workouts updated, ${res.deleted} deleted.`,
+          res,
+        );
+      }),
+  );
+
+  server.registerTool(
     "set_targets",
     {
       title: "Change targets",
@@ -377,7 +435,8 @@ export const SERVER_INSTRUCTIONS =
   `Batul's calorie and macro tracker. Today is ${"{today}"} (${TIME_ZONE}). ` +
   "Before estimating a food, check list_recipes for a saved match. Estimate unknown foods from standard nutrition data " +
   "(prefer Dutch NEVO values or package labels) and confirm numbers before calling log_food or save_recipe. " +
-  "After logging, report the day's kcal and protein against target.";
+  "After logging, report the day's kcal and protein against target. " +
+  "Strength training comes from Hevy (read-only): use get_strength for progression questions.";
 
 export function instructions() {
   return SERVER_INSTRUCTIONS.replace("{today}", todayIso());
