@@ -4,6 +4,7 @@ import { getDay, listRecipes } from "@/lib/data";
 import { addDays, currentHour, formatDate, isIsoDate, todayIso } from "@/lib/dates";
 import { Bar, fmtInt, r0, r1, status } from "@/components/ui";
 import {
+  addChinupSetAction,
   addCustomEntryAction,
   addRecipeEntryAction,
   deleteEntryAction,
@@ -100,6 +101,30 @@ export default async function TodayPage({ searchParams }: { searchParams: Promis
                 "–"
               )}
             </span>
+          </div>
+          <div className="metric">
+            <span className="muted small">Chin-ups (GtG)</span>
+            <span className="v num">
+              {d.chinupSets ?? 0} <span className="muted small">{d.chinupSets === 1 ? "set" : "sets"}</span>
+            </span>
+            <div className="row">
+              <form action={addChinupSetAction}>
+                <input type="hidden" name="date" value={date} />
+                <input type="hidden" name="delta" value="1" />
+                <button type="submit" className="primary" aria-label="Add a chin-up set">
+                  +1 set
+                </button>
+              </form>
+              {(d.chinupSets ?? 0) > 0 && (
+                <form action={addChinupSetAction}>
+                  <input type="hidden" name="date" value={date} />
+                  <input type="hidden" name="delta" value="-1" />
+                  <button type="submit" aria-label="Remove a chin-up set">
+                    −1
+                  </button>
+                </form>
+              )}
+            </div>
           </div>
         </div>
         {d.override && <span className="hint">Targets are adjusted for this day.</span>}

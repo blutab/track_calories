@@ -65,6 +65,13 @@ export async function saveStatsAction(f: FormData) {
   done();
 }
 
+export async function addChinupSetAction(f: FormData) {
+  await guard();
+  const delta = Number(str(f, "delta") || "1");
+  await data.addChinupSets(resolveDate(str(f, "date")), delta < 0 ? -1 : 1);
+  done();
+}
+
 export async function saveDayTargetsAction(f: FormData) {
   await guard();
   const date = resolveDate(str(f, "date"));

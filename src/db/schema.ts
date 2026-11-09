@@ -53,11 +53,13 @@ export const dayTargets = pgTable("day_targets", {
   ...targetCols,
 });
 
-/** Steps and body weight per day. */
+/** Steps, body weight and grease-the-groove chin-up sets per day. */
 export const dayStats = pgTable("day_stats", {
   date: date("date").primaryKey(),
   steps: integer("steps"),
   weightKg: doublePrecision("weight_kg"),
+  /** Grease the groove: number of chin-up sets done that day. */
+  chinupSets: integer("chinup_sets"),
 });
 
 export const recipes = pgTable("recipes", {

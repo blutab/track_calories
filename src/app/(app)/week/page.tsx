@@ -49,6 +49,11 @@ export default async function WeekPage({ searchParams }: { searchParams: Promise
             </span>
           </div>
           <div className="metric">
+            <span className="muted small">Chin-up sets (GtG)</span>
+            <span className="v num">{w.chinupSetsTotal}</span>
+            <span className="small muted">{w.daysWithChinups}/7 days</span>
+          </div>
+          <div className="metric">
             <span className="muted small">Weight, 7-day avg</span>
             <span className="v num">{w.weightTrendKg != null ? `${r1(w.weightTrendKg)} kg` : dash}</span>
             {w.weightBand ? (
@@ -91,6 +96,7 @@ export default async function WeekPage({ searchParams }: { searchParams: Promise
                 <th>Fat</th>
                 <th>Fibre</th>
                 <th>Steps</th>
+                <th>Chin-ups</th>
                 <th>kg</th>
               </tr>
             </thead>
@@ -114,6 +120,7 @@ export default async function WeekPage({ searchParams }: { searchParams: Promise
                     <td>{has ? r0(d.totals.fat) : dash}</td>
                     <td>{has ? r1(d.totals.fibre) : dash}</td>
                     <td>{d.steps != null ? fmtInt(d.steps) : dash}</td>
+                    <td>{d.chinupSets ?? dash}</td>
                     <td>{d.weightKg != null ? r1(d.weightKg) : dash}</td>
                   </tr>
                 );
