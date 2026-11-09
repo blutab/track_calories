@@ -219,12 +219,51 @@ export type ProgressKind = "e1rm" | "reps" | "duration";
 export type SessionBest = {
   date: string;
   workoutTitle: string;
-  /** e1RM in kg, max reps, or max seconds, depending on the exercise's kind. */
+  /** e1RM in kg, total reps across working sets, or max seconds, depending on the exercise's kind. */
   value: number;
-  /** Human-readable best set, e.g. "60 kg × 5". */
+  /** Human-readable best set (or set list for rep moves), e.g. "60 kg × 5" or "3 × 10". */
   topSet: string;
   workingSets: number;
 };
+
+/** Movement pattern, used to group lifts on the Strength page. Classified from the exercise title. */
+export type Pattern = "squat" | "hinge" | "push" | "pull" | "core" | "other";
+export const PATTERNS: { key: Pattern; label: string }[] = [
+  { key: "squat", label: "Squat & knee" },
+  { key: "hinge", label: "Hinge & hamstrings" },
+  { key: "push", label: "Push" },
+  { key: "pull", label: "Pull" },
+  { key: "core", label: "Core" },
+  { key: "other", label: "Other" },
+];
+
+// Order matters: the first match wins ("leg press" before "press", "leg curl" before "curl").
+const PATTERN_RULES: [Pattern, RegExp][] = [
+  ["other", /treadmill|cycling|bike|elliptical|rowing machine|calf|adduction|abduction|clamshell|banded walk|terminal knee/i],
+  ["core", /leg raise|leg lift|knee raise|plank|hollow|dead ?bug|crunch|sit ?up|\bab\b|abs\b|pallof|l-?sit|v-?up|russian twist|bird ?dog|heel tap/i],
+  ["squat", /squat|leg press|lunge|step ?up|leg extension|pistol|hack|sissy/i],
+  ["hinge", /deadlift|\brdl\b|romanian|hip thrust|glute bridge|leg curl|hamstring|good ?morning|swing|back extension|hyperextension|kickback|nordic/i],
+  // \bchin, not "chin": "Machine" contains it.
+  ["pull", /\bchin|pull ?up|\brow\b|pulldown|pull ?down|face pull|rear delt|bicep|curl|shrug/i],
+  ["push", /push ?up|bench|press|dip|fly|tricep|handstand|wall walk|lateral raise|front raise|shoulder|skull/i],
+];
+export function patternFor(title: string): Pattern {
+  for (const [p, re] of PATTERN_RULES) if (re.test(title)) return p;
+  return "other";
+}
+
+/**
+ * up / flat / down: trend over the window (needs 4+ weeks with data and a session in the last 4 weeks).
+ * new: done recently but not enough weeks for a trend. inactive: not done in the last 4 weeks.
+ */
+export type TrendStatus = "up" | "flat" | "down" | "new" | "inactive";
+
+/** Trend over the window counts as up/down beyond ±3% (Theil–Sen slope on weekly bests). */
+const TREND_THRESHOLD_PCT = 3;
+/** Loaded lifts and holds this far below their all-time PR are flagged. */
+const BELOW_PR_PCT = 10;
+/** Flag as stalled when the last N sessions haven't beaten the best before them. */
+const STALL_SESSIONS = 6;
 
 export type ExerciseProgress = {
   key: string;
@@ -246,7 +285,19 @@ export type ExerciseProgress = {
   windowStart: number | null;
   /** Per-session best inside the window, oldest first. */
   series: SessionBest[];
+  pattern: Pattern;
+  /** Best session per Monday–Sunday week inside the window (smooths out different workout types). */
+  weekly: { start: string; value: number }[];
+  /** Projected change across the window, as % of the average weekly best. Null without enough data. */
+  trendPct: number | null;
+  status: TrendStatus;
+  /** Current best as % of all-time PR (loaded lifts and holds only). */
+  pctOfPr: number | null;
+  /** Why this lift needs attention, or null. */
+  attention: string | null;
 };
+
+export type StrengthSummary = { up: number; flat: number; down: number; new: number; inactive: number };
 
 export type NewPr = { date: string; title: string; kind: ProgressKind; unit: string; value: number; previous: number; topSet: string };
 
@@ -264,6 +315,8 @@ export type StrengthReport = {
   exercises: ExerciseProgress[];
   /** Exercises whose best in the last 4 weeks beats every session before that. One per exercise. */
   newPrs: NewPr[];
+  /** Exercise counts by trend status over the window (exercises with a session in the window). */
+  summary: StrengthSummary;
 };
 
 const UNIT = { e1rm: "kg", reps: "reps", duration: "s" } as const;
@@ -292,7 +345,36 @@ function kindFor(sets: SetRow[]): ProgressKind | null {
   return null;
 }
 
+/** "3 × 10", "10, 9, 8" or "7 sets, best 12". */
+function fmtRepSets(reps: number[]) {
+  if (reps.every((r) => r === reps[0])) return reps.length === 1 ? `${reps[0]} reps` : `${reps.length} × ${reps[0]}`;
+  if (reps.length <= 5) return reps.join(", ");
+  return `${reps.length} sets, best ${Math.max(...reps)}`;
+}
+
+/** Theil–Sen slope (median of pairwise slopes): robust to one odd week. Units per day. */
+function theilSen(points: { t: number; v: number }[]): number | null {
+  const slopes: number[] = [];
+  for (let i = 0; i < points.length; i++)
+    for (let j = i + 1; j < points.length; j++) {
+      const dt = points[j].t - points[i].t;
+      if (dt > 0) slopes.push((points[j].v - points[i].v) / dt);
+    }
+  if (!slopes.length) return null;
+  slopes.sort((a, b) => a - b);
+  const m = slopes.length >> 1;
+  return slopes.length % 2 ? slopes[m] : (slopes[m - 1] + slopes[m]) / 2;
+}
+
 function bestOf(sets: SetRow[], kind: ProgressKind): { value: number; topSet: string } | null {
+  // Bodyweight rep moves: total reps across working sets, so adding sets counts as progress.
+  if (kind === "reps") {
+    const reps = sets.map((s) => s.reps ?? 0).filter((r) => r > 0);
+    if (!reps.length) return null;
+    const w = sets.find((s) => s.weightKg)?.weightKg;
+    const load = w ? ` (${r1(w)} kg${isAssisted(sets[0].title) ? " assist" : ""})` : "";
+    return { value: reps.reduce((a, b) => a + b, 0), topSet: fmtRepSets(reps) + load };
+  }
   let best: { value: number; topSet: string } | null = null;
   for (const s of sets) {
     let v: number | null = null;
@@ -300,9 +382,6 @@ function bestOf(sets: SetRow[], kind: ProgressKind): { value: number; topSet: st
     if (kind === "e1rm" && s.e1rmKg != null) {
       v = s.e1rmKg;
       label = isAssisted(s.title) ? `${s.reps} reps, ${r1(s.weightKg!)} kg assist` : `${r1(s.weightKg!)} kg × ${s.reps}`;
-    } else if (kind === "reps" && s.reps) {
-      v = s.reps;
-      label = s.weightKg ? `${s.reps} reps (${r1(s.weightKg)} kg${isAssisted(s.title) ? " assist" : ""})` : `${s.reps} reps`;
     } else if (kind === "duration" && s.durationS) {
       v = s.durationS;
       label = fmtDuration(s.durationS);
@@ -424,6 +503,43 @@ export async function getStrength({ weeks = 12, exercise }: { weeks?: number; ex
     const current = maxIn(last4, today);
     const previous = maxIn(prev4, addDays(last4, -1));
     const series = sessions.filter((s) => s.date >= windowStart);
+
+    // Weekly bests → trend. Different workout days prescribe different volumes (e.g. 3 vs 6 sets
+    // of push-ups), so the best of each week is a fairer series than every session.
+    const weekMap = new Map<string, number>();
+    for (const s of series) {
+      const wk = mondayOf(s.date);
+      weekMap.set(wk, Math.max(weekMap.get(wk) ?? 0, s.value));
+    }
+    const weekly = [...weekMap].sort(([a], [b]) => a.localeCompare(b)).map(([start, value]) => ({ start, value }));
+    let trendPct: number | null = null;
+    if (weekly.length >= 4) {
+      const t0 = Date.parse(weekly[0].start);
+      const slope = theilSen(weekly.map((w) => ({ t: (Date.parse(w.start) - t0) / 864e5, v: w.value })));
+      const mean = weekly.reduce((a, w) => a + w.value, 0) / weekly.length;
+      const span = (Date.parse(weekly[weekly.length - 1].start) - t0) / 864e5;
+      if (slope != null && mean > 0) trendPct = r1(((slope * span) / mean) * 100);
+    }
+    const status: TrendStatus =
+      current == null ? "inactive"
+      : trendPct == null ? "new"
+      : trendPct >= TREND_THRESHOLD_PCT ? "up"
+      : trendPct <= -TREND_THRESHOLD_PCT ? "down"
+      : "flat";
+
+    // Rep totals depend on how many sets the programme prescribes, so only compare
+    // loaded lifts and holds with their all-time PR.
+    const pctOfPr = current != null && kind !== "reps" && pr.value > 0 ? Math.round((current / pr.value) * 100) : null;
+    const reasons: string[] = [];
+    if (status === "down") reasons.push(`Trending down ${Math.abs(trendPct!)}% over ${weekly.length} weeks`);
+    if (pctOfPr != null && pctOfPr <= 100 - BELOW_PR_PCT) reasons.push(`${100 - pctOfPr}% below PR`);
+    if (status === "flat" && series.length >= STALL_SESSIONS) {
+      const lastN = series.slice(-STALL_SESSIONS);
+      const before = sessions.slice(0, sessions.length - STALL_SESSIONS);
+      if (before.length && Math.max(...lastN.map((s) => s.value)) <= Math.max(...before.map((s) => s.value)))
+        reasons.push(`No new best in ${STALL_SESSIONS} sessions`);
+    }
+
     exercises.push({
       key,
       title,
@@ -440,11 +556,19 @@ export async function getStrength({ weeks = 12, exercise }: { weeks?: number; ex
       changePct: current != null && previous != null ? pct(current, previous) : null,
       windowStart: series[0]?.value ?? null,
       series,
+      pattern: patternFor(title),
+      weekly,
+      trendPct,
+      status,
+      pctOfPr,
+      attention: current != null && reasons.length ? reasons.join(" · ") : null,
     });
   }
 
   exercises.sort((a, b) => b.sessionsInWindow - a.sessionsInWindow || b.lastDate.localeCompare(a.lastDate));
   newPrs.sort((a, b) => b.date.localeCompare(a.date));
+  const summary: StrengthSummary = { up: 0, flat: 0, down: 0, new: 0, inactive: 0 };
+  for (const e of exercises) if (e.sessionsInWindow > 0) summary[e.status]++;
 
   return {
     configured: hevyConfigured(),
@@ -466,6 +590,7 @@ export async function getStrength({ weeks = 12, exercise }: { weeks?: number; ex
     weeks: weekList,
     exercises,
     newPrs,
+    summary,
   };
 }
 

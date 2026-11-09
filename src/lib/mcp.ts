@@ -353,8 +353,10 @@ export function registerTools(server: McpServer) {
       description:
         "Strength training synced from Hevy. Per exercise: all-time PR, best in the last 4 weeks vs the 4 weeks before " +
         "(estimated 1RM in kg via Epley for loaded lifts of 1–12 reps; assisted moves use body weight minus assistance when a weigh-in is within 2 weeks; " +
-        "max reps for bodyweight moves; max seconds for holds), " +
-        "per-session bests over the window, weekly workouts/sets/volume, and lifts whose last-4-weeks best beats everything before. Warm-ups are ignored. " +
+        "total reps across working sets for bodyweight moves; max seconds for holds), " +
+        "trend over the window (up/flat/down beyond ±3%, Theil–Sen on weekly bests), movement pattern, a 'needs attention' reason " +
+        "(trending down, 10%+ below PR, or no new best in 6 sessions), per-session and weekly bests, weekly workouts/sets/volume, " +
+        "and lifts whose last-4-weeks best beats everything before. Warm-ups are ignored. " +
         "Pass `exercise` (e.g. 'squat', 'hip thrust') to focus on matching lifts. Syncs from Hevy first if data is over 30 minutes old.",
       inputSchema: z.object({
         weeks: z.number().int().min(4).max(104).default(12).describe("Window for the per-session series and weekly load"),
@@ -370,13 +372,17 @@ export function registerTools(server: McpServer) {
         const top = r.exercises.slice(0, exercise ? 20 : 8).map((e) => {
           const cur = e.current != null ? `${e.current} ${e.unit}` : "not done in last 4 wks";
           const ch = e.change != null ? ` (${e.change >= 0 ? "+" : ""}${e.change} ${e.unit} vs prior 4 wks)` : "";
-          return `${e.title}: ${cur}${ch}; PR ${e.pr.value} ${e.unit} on ${e.pr.date} (${e.pr.topSet})`;
+          const tr = e.trendPct != null ? `; trend ${e.status} ${e.trendPct >= 0 ? "+" : ""}${e.trendPct}% over ${weeks} wks` : "";
+          const att = e.attention ? `; needs attention: ${e.attention}` : "";
+          return `${e.title} [${e.pattern}]: ${cur}${ch}${tr}; PR ${e.pr.value} ${e.unit} on ${e.pr.date} (${e.pr.topSet})${att}`;
         });
+        const s = r.summary;
+        const counts = `Trend over ${weeks} wks: ${s.up} up, ${s.flat} flat, ${s.down} down, ${s.new} too new, ${s.inactive} not done in last 4 wks.`;
         const prs = r.newPrs.map((p) => `${p.date} ${p.title} ${p.value} ${p.unit} (was ${p.previous})`);
         const summary =
           `${r.totalWorkouts} Hevy workouts synced (last OK sync ${r.lastSyncOkAt?.toISOString() ?? "never"}` +
           `${r.lastSyncError ? `; last error: ${r.lastSyncError}` : ""}). ` +
-          `Last ${weeks} weeks: ${r.weeks.reduce((a, w) => a + w.workouts, 0)} workouts.\n` +
+          `Last ${weeks} weeks: ${r.weeks.reduce((a, w) => a + w.workouts, 0)} workouts. ${counts}\n` +
           (top.length ? top.join("\n") : "No matching exercises.") +
           (prs.length ? `\nLifts with a new PR in the last 4 weeks:\n${prs.join("\n")}` : "\nNo new PRs in the last 4 weeks.");
         return ok(summary, r);
