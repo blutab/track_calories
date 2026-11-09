@@ -1,0 +1,1 @@
+ALTER TABLE "day_stats" ADD COLUMN "chinup_sets" integer;

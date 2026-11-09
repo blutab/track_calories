@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, lte, inArray } from "drizzle-orm";
+import { and, asc, eq, gte, lte, inArray, sql } from "drizzle-orm";
 import { getDb, schema } from "@/db";
 import type { Meal } from "@/db/schema";
 import { addDays, mondayOf, todayIso } from "./dates";
@@ -50,6 +50,8 @@ export type Day = {
   override: TargetPatch | null;
   steps: number | null;
   weightKg: number | null;
+  /** Grease the groove: chin-up sets done that day. */
+  chinupSets: number | null;
   /** Today in the app time zone: still being logged, so left out of weekly scores. */
   inProgress: boolean;
   /** Calorie maintenance band for this day's kcal target. */
@@ -227,6 +229,7 @@ export async function getDays(from: string, to: string): Promise<Day[]> {
       targets: t,
       steps: stat?.steps ?? null,
       weightKg: stat?.weightKg ?? null,
+      chinupSets: stat?.chinupSets ?? null,
       inProgress: d === today,
       kcalBand: band,
       kcalStatus: entries.length ? bandStatus(totals.kcal, band) : null,
@@ -257,6 +260,9 @@ export type WeekSummary = {
   daysHitProtein: number;
   daysHitSteps: number;
   daysWithSteps: number;
+  /** Chin-up sets across the week (grease the groove). */
+  chinupSetsTotal: number;
+  daysWithChinups: number;
   weightChangeKg: number | null;
   weighIns: number;
   /** 7-day rolling average at the week's last weigh-in. */
@@ -298,6 +304,8 @@ export async function getWeek(anyDateInWeek: string): Promise<WeekSummary> {
     daysHitProtein: scored.filter((d) => d.targets.protein != null && d.totals.protein >= d.targets.protein).length,
     daysHitSteps: withSteps.filter((d) => d.targets.steps != null && d.steps! >= d.targets.steps).length,
     daysWithSteps: withSteps.length,
+    chinupSetsTotal: days.reduce((a, d) => a + (d.chinupSets ?? 0), 0),
+    daysWithChinups: days.filter((d) => (d.chinupSets ?? 0) > 0).length,
     weightChangeKg: weights.length >= 2 ? r1(lastWeighIn.weightKg! - weights[0].weightKg!) : null,
     weighIns: weights.length,
     weightTrendKg,
@@ -307,19 +315,50 @@ export async function getWeek(anyDateInWeek: string): Promise<WeekSummary> {
 }
 
 /** `undefined` leaves a value as is; `null` clears it. */
-export async function setDayStats(date: string, patch: { steps?: number | null; weightKg?: number | null }) {
+export async function setDayStats(
+  date: string,
+  patch: { steps?: number | null; weightKg?: number | null; chinupSets?: number | null },
+) {
   const db = getDb();
   const [existing] = await db.select().from(dayStats).where(eq(dayStats.date, date));
   const next = {
     steps: patch.steps !== undefined ? (patch.steps == null ? null : Math.round(patch.steps)) : (existing?.steps ?? null),
     weightKg: patch.weightKg !== undefined ? (patch.weightKg == null ? null : r1(patch.weightKg)) : (existing?.weightKg ?? null),
+    chinupSets:
+      patch.chinupSets !== undefined
+        ? patch.chinupSets == null || patch.chinupSets <= 0
+          ? null
+          : Math.round(patch.chinupSets)
+        : (existing?.chinupSets ?? null),
   };
-  if (next.steps == null && next.weightKg == null) {
+  if (next.steps == null && next.weightKg == null && next.chinupSets == null) {
     await db.delete(dayStats).where(eq(dayStats.date, date));
   } else {
     await db.insert(dayStats).values({ date, ...next }).onConflictDoUpdate({ target: dayStats.date, set: next });
   }
   return next;
+}
+
+/**
+ * Add (or with a negative delta, remove) chin-up sets for a day. Atomic, so quick
+ * repeated taps don't lose a set. Never goes below zero; zero is stored as NULL.
+ */
+export async function addChinupSets(date: string, delta = 1): Promise<number> {
+  const db = getDb();
+  const d = Math.round(delta);
+  const [row] = await db
+    .insert(dayStats)
+    .values({ date, chinupSets: Math.max(0, d) })
+    .onConflictDoUpdate({
+      target: dayStats.date,
+      set: { chinupSets: sql`greatest(0, coalesce(${dayStats.chinupSets}, 0) + ${d})` },
+    })
+    .returning();
+  if ((row.chinupSets ?? 0) === 0) {
+    await setDayStats(date, { chinupSets: null });
+    return 0;
+  }
+  return row.chinupSets!;
 }
 
 // ---------- recipes ----------

@@ -15,6 +15,13 @@
       "when": 1793873027985,
       "tag": "0001_bands",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794220186257,
+      "tag": "0002_chinups",
+      "breakpoints": true
     }
   ]
 }

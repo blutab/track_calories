@@ -70,6 +70,7 @@ function daySummary(d: data.Day): string {
   parts.push(`carbs ${d.totals.carbs} g, fat ${d.totals.fat} g, fibre ${d.totals.fibre} g`);
   if (d.steps != null) parts.push(`steps ${d.steps}${t.steps != null ? ` / ${t.steps}` : ""}`);
   if (d.weightKg != null) parts.push(`weight ${d.weightKg} kg`);
+  if (d.chinupSets != null) parts.push(`chin-up sets ${d.chinupSets}`);
   return parts.join(" · ");
 }
 
@@ -85,6 +86,7 @@ function dayPayload(d: data.Day) {
     steps: d.steps,
     weightKg: d.weightKg,
     weightAvg7Kg: d.weightAvg7Kg,
+    chinupSets: d.chinupSets,
     entries: d.entries.map((e) => ({
       id: e.id,
       meal: e.meal,
@@ -135,7 +137,8 @@ export function registerTools(server: McpServer) {
           `Week ${w.start} to ${w.end}: ${w.scoredDays} finished days logged${inProgress ? " (+ today in progress)" : ""}, ` +
           `avg ${w.avg.kcal ?? "–"} kcal, avg protein ${w.avg.protein ?? "–"} g, ` +
           `calorie band (±${w.bands.kcalBandPct}%): ${w.daysOnCalorieTarget} in, ${w.daysUnderCalorieBand} under, ${w.daysOverCalorieBand} over, ` +
-          `protein hit ${w.daysHitProtein}/${w.scoredDays}, steps hit ${w.daysHitSteps}/${w.daysWithSteps}` +
+          `protein hit ${w.daysHitProtein}/${w.scoredDays}, steps hit ${w.daysHitSteps}/${w.daysWithSteps}, ` +
+          `chin-up sets ${w.chinupSetsTotal} over ${w.daysWithChinups} days` +
           (w.weightTrendKg != null ? `, 7-day avg weight ${w.weightTrendKg} kg` : "") +
           (w.weightBand
             ? ` (band ${w.weightBand.low}–${w.weightBand.high} kg${w.weightStatus ? `, ${BAND_WORD[w.weightStatus]}` : ""})`
@@ -154,6 +157,7 @@ export function registerTools(server: McpServer) {
             steps: d.steps,
             weightKg: d.weightKg,
             weightAvg7Kg: d.weightAvg7Kg,
+            chinupSets: d.chinupSets,
             entryCount: d.entries.length,
           })),
         });
@@ -297,19 +301,45 @@ export function registerTools(server: McpServer) {
   server.registerTool(
     "set_day_stats",
     {
-      title: "Record steps or weight",
-      description: "Set steps and/or body weight (kg) for a day. Omit a field to keep it; pass null to clear it.",
+      title: "Record steps, weight or chin-up sets",
+      description:
+        "Set steps, body weight (kg) and/or the day's total chin-up sets (grease the groove) for a day. " +
+        "Omit a field to keep it; pass null to clear it. To add a set as it happens, use log_chinups instead.",
       inputSchema: z.object({
         date: dateArg,
         steps: z.number().int().min(0).nullable().optional(),
         weightKg: z.number().positive().nullable().optional(),
+        chinupSets: z.number().int().min(0).nullable().optional(),
       }),
     },
-    async ({ date, steps, weightKg }) =>
+    async ({ date, steps, weightKg, chinupSets }) =>
       run(async () => {
         const d0 = resolveDate(date);
-        const s = await data.setDayStats(d0, { steps, weightKg });
-        return ok(`${d0}: steps ${s.steps ?? "–"}, weight ${s.weightKg ?? "–"} kg.`, { date: d0, ...s });
+        const s = await data.setDayStats(d0, { steps, weightKg, chinupSets });
+        return ok(`${d0}: steps ${s.steps ?? "–"}, weight ${s.weightKg ?? "–"} kg, chin-up sets ${s.chinupSets ?? 0}.`, {
+          date: d0,
+          ...s,
+        });
+      }),
+  );
+
+  server.registerTool(
+    "log_chinups",
+    {
+      title: "Log chin-up sets (grease the groove)",
+      description:
+        "Add chin-up sets to a day's grease-the-groove count. Default adds 1 set to today. " +
+        "Use a negative count to undo. Returns the day's new total.",
+      inputSchema: z.object({
+        date: dateArg,
+        count: z.number().int().min(-50).max(50).optional(),
+      }),
+    },
+    async ({ date, count }) =>
+      run(async () => {
+        const d0 = resolveDate(date);
+        const total = await data.addChinupSets(d0, count ?? 1);
+        return ok(`${d0}: ${total} chin-up set${total === 1 ? "" : "s"} today.`, { date: d0, chinupSets: total });
       }),
   );
 
